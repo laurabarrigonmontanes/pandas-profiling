@@ -73,9 +73,8 @@ class Spearman(Correlation):
             # Can't compute correlations with 1 or less columns
             return None
 
-        # assemble all numeric columns into a vector
-        assembler = VectorAssembler(inputCols=numeric_columns, outputCol="features")
-        output_df = assembler.transform(df.get_spark_df().na.drop())
+        # get precomputed numeric vector
+        output_df = df.as_vector
 
         if len(output_df.head(1)) > 0:
             # perform correlation in spark, and get the results back in pandas
@@ -123,9 +122,8 @@ class Pearson(Correlation):
             # Can't compute correlations with 1 or less columns
             return None
 
-        # assemble all numeric columns into a vector
-        assembler = VectorAssembler(inputCols=numeric_columns, outputCol="features")
-        output_df = assembler.transform(df.get_spark_df().na.drop())
+        # get precomputed numeric vector
+        output_df = df.as_vector
 
         # perform correlation in spark, and get the results back in pandas
         if len(output_df.head(1)) > 0:
@@ -247,7 +245,7 @@ class Cramers(Correlation):
                                 was not provided. Original Error : {e}"""
                 )
         else:
-            if not confusion_matrix:
+            if not isinstance(confusion_matrix, pd.DataFrame):
                 raise ValueError(
                     "confusion matrix must be specificed if precomputed matrix not provided"
                 )
@@ -262,7 +260,7 @@ class Cramers(Correlation):
             phi2corr = max(0.0, phi2 - ((k - 1.0) * (r - 1.0)) / (n - 1.0))
             rcorr = r - ((r - 1.0) ** 2.0) / (n - 1.0)
             kcorr = k - ((k - 1.0) ** 2.0) / (n - 1.0)
-            corr = np.sqrt(phi2corr / min((kcorr - 1.0), (rcorr - 1.0)))
+            corr = np.sqrt(phi2corr / np.float64(min((kcorr - 1.0), (rcorr - 1.0))))
         return corr
 
     @singledispatchmethod

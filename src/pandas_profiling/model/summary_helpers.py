@@ -28,12 +28,48 @@ def mad(arr):
     return np.median(np.abs(arr - np.median(arr)))
 
 
-def named_aggregate_summary(series: pd.Series, key: str):
+@singledispatch
+def named_aggregate_summary(series, key: str):
+    series_type = type(series)
+    raise NotImplementedError(f"Function not implemented for series type {series_type}")
+
+
+@named_aggregate_summary.register(pd.Series)
+def _named_aggregate_summary_pandas(series: pd.Series, key: str):
     summary = {
         f"max_{key}": np.max(series),
         f"mean_{key}": np.mean(series),
         f"median_{key}": np.median(series),
         f"min_{key}": np.min(series),
+    }
+
+    return summary
+
+
+@named_aggregate_summary.register(SparkSeries)
+def _named_aggregate_summary_spark(series: SparkSeries, key: str):
+    import pyspark.sql.functions as F
+
+    lengths = series.dropna.select(F.length(series.name).alias("length"))
+
+    # do not count length of nans
+    numeric_results_df = (
+        lengths.select(
+            F.mean("length").alias("mean"),
+            F.min("length").alias("min"),
+            F.max("length").alias("max"),
+        )
+        .toPandas()
+        .T
+    )
+
+    quantile_error = config["spark"]["quantile_error"].get(float)
+    median = lengths.stat.approxQuantile("length", [0.5], quantile_error)[0]
+    summary = {
+        f"max_{key}": numeric_results_df.loc["max"][0],
+        f"mean_{key}": numeric_results_df.loc["mean"][0],
+        f"median_{key}": median,
+        f"min_{key}": numeric_results_df.loc["min"][0],
     }
 
     return summary
@@ -59,17 +95,21 @@ def _length_summary_pandas(series: pd.Series, summary: dict = {}) -> dict:
 def _length_summary_spark(series: SparkSeries, summary: dict = {}) -> dict:
     import pyspark.sql.functions as F
 
+    length_values_sample = config["spark"]["length_values_sample"].get(int)
+    if length_values_sample >= series.n_rows:
+        percentage = 1.0
+    else:
+        percentage = length_values_sample / series.n_rows
     # do not count length of nans
     length = (
-        series.get_spark_series()
-        .na.drop()
-        .select(F.length(series.name))
+        series.dropna.select(F.length(series.name))
+        .sample(percentage)
         .toPandas()
         .squeeze()
     )
 
     summary.update({"length": length})
-    summary.update(named_aggregate_summary(length, "length"))
+    summary.update(named_aggregate_summary(series, "length"))
 
     return summary
 
@@ -301,9 +341,9 @@ def _get_character_counts_spark(series: SparkSeries) -> Counter:
     import pyspark.sql.functions as F
 
     # this function is optimised to split all characters and explode the characters and then groupby the characters
+    # because the number of characters is limited, the return dataset is small -> can return everything to pandas
     df = (
-        series.get_spark_series()
-        .select(F.explode(F.split(F.col(series.name), "")))
+        series.dropna.select(F.explode(F.split(F.col(series.name), "")))
         .groupby("col")
         .count()
         .toPandas()
@@ -409,18 +449,47 @@ def histogram_compute(finite_values, n_unique, name="histogram", weights=None):
     return stats
 
 
+def histogram_compute_spark(sparkseries, bins, n_unique, name="histogram"):
+    stats = {}
+    config_bins = config["spark"]["histogram_bins"].get(int)
+    bins = bins if config_bins == 0 else min(bins, n_unique)
+
+    spark_histogram = (
+        sparkseries.dropna.select(sparkseries.name)
+        .rdd.flatMap(lambda x: x)
+        .histogram(bins)
+    )
+
+    # Loading the Computed Histogram into a Pandas Dataframe for plotting
+    computed_bins = [i[0] for i in spark_histogram]
+    weights = [i[1] for i in spark_histogram]
+    stats[name] = np.histogram(computed_bins, bins=bins, weights=weights)
+    return stats
+
+
 def chi_square(values=None, histogram=None):
     if histogram is None:
         histogram, _ = np.histogram(values, bins="auto")
     return dict(chisquare(histogram)._asdict())
 
 
-def spark_chi_square(series: SparkSeries):
-    series.value_counts()
-    value_counts = (
-        series.get_spark_series().na.drop().groupBy(series.name).count().toPandas()
-    )
-    value_counts = value_counts.sort_values("count", ascending=False).set_index(
-        series.name, drop=True
-    )
-    return dict(chisquare(value_counts)._asdict())
+def chi_square_spark(series):
+    """
+    currently unused, this is a function to compute chisquare using spark, but it slows down compute a lot.
+
+    Args:
+        series:
+
+    Returns:
+
+    """
+    from pyspark.ml.feature import StringIndexer, VectorAssembler
+    from pyspark.mllib.stat import Statistics
+
+    vector_name = series.name + "assembled"
+    vecAssembler = StringIndexer(inputCol=series.name, outputCol=vector_name)
+    vec = vecAssembler.fit(series.dropna).transform(series.dropna)
+    vec = vec.select(vector_name)
+    vec = vec.collect()
+    results = Statistics.chiSqTest(vec)
+    return {"statistic": results.statistic, "pvalue": results.pValue}

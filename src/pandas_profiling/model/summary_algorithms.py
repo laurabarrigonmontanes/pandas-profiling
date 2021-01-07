@@ -164,15 +164,10 @@ def numeric_stats_numpy(present_values, series, series_description):
 
 
 def numeric_stats_spark(series: SparkSeries):
-    #     summary["min"] = summary["value_counts_without_nan"].index.min()
-    # vc.index.min()
-
     import pyspark.sql.functions as F
 
-    series.persist()
-
     numeric_results_df = (
-        series.series_without_na.select(
+        series.dropna.select(
             F.mean(series.name).alias("mean"),
             F.stddev(series.name).alias("std"),
             F.variance(series.name).alias("variance"),
@@ -185,8 +180,6 @@ def numeric_stats_spark(series: SparkSeries):
         .toPandas()
         .T
     )
-
-    series.unpersist()
 
     results = {
         "mean": numeric_results_df.loc["mean"][0],
@@ -464,7 +457,24 @@ def describe_counts_spark(
     Returns:
         A dictionary with the count values (with and without NaN, distinct).
     """
-    summary["value_counts_without_nan"] = series.value_counts(keep_na=False)
+    spark_value_counts = series.value_counts()
+
+    # max number of rows to visualise on histogram, most common values taken
+    to_pandas_limit = config["spark"]["to_pandas_limit"].get(int)
+    limited_results = (
+        spark_value_counts.orderBy("count", ascending=False)
+        .limit(to_pandas_limit)
+        .toPandas()
+    )
+
+    limited_results = (
+        limited_results.sort_values("count", ascending=False)
+        .set_index(series.name, drop=True)
+        .squeeze(axis="columns")
+    )
+
+    summary["value_counts_without_nan"] = limited_results
+    summary["value_counts_without_nan_spark"] = spark_value_counts
     summary["n_missing"] = series.count_na()
 
     return series, summary
@@ -484,9 +494,8 @@ def describe_supported_spark(
     # number of non-NaN observations in the Series
     count = series_description["count"]
 
-    value_counts = series_description["value_counts_without_nan"]
-    distinct_count = len(value_counts)
-    unique_count = value_counts.where(value_counts == 1).count()
+    distinct_count = series.distinct()
+    unique_count = series.unique()
 
     stats = {
         "n_distinct": distinct_count,
@@ -540,55 +549,48 @@ def describe_numeric_spark_1d(series: SparkSeries, summary) -> Tuple[SparkSeries
 
     import pyspark.sql.functions as F
 
-    chi_squared_threshold = config["vars"]["num"]["chi_squared_threshold"].get(float)
     quantiles = config["vars"]["num"]["quantiles"].get(list)
 
     value_counts = summary["value_counts_without_nan"]
 
-    summary["n_zeros"] = 0
-
     infinity_values = [np.inf, -np.inf]
-    infinity_index = value_counts.index.isin(infinity_values)
-    summary["n_infinite"] = value_counts.loc[infinity_index].sum()
+    summary["n_infinite"] = series.dropna.where(
+        series.dropna[series.name].isin(infinity_values)
+    ).count()
 
-    if 0 in value_counts.index:
-        infinity_values = [np.inf, -np.inf]
-    infinity_index = value_counts.index.isin(infinity_values)
-    summary["n_infinite"] = value_counts.loc[infinity_index].sum()
-
-    if 0 in value_counts.index:
-        summary["n_zeros"] = value_counts.loc[0]
+    summary["n_zeros"] = series.dropna.where(f"{series.name} = 0").count()
 
     stats = summary
 
     stats.update(numeric_stats_spark(series))
 
-    # manual MAD computation, refactor possible
-    median = series.series_without_na.stat.approxQuantile(series.name, [0.5], 0)[0]
+    quantile_threshold = config["spark"]["quantile_error"].get(float)
 
-    mad = series.series_without_na.select(
+    # manual MAD computation, refactor possible
+    stats.update(
+        {
+            f"{percentile:.0%}": value
+            for percentile, value in zip(
+                quantiles,
+                series.dropna.stat.approxQuantile(
+                    series.name, quantiles, quantile_threshold
+                ),
+            )
+        }
+    )
+
+    median = stats["50%"]
+
+    mad = series.dropna.select(
         (F.abs(F.col(series.name).cast("int") - median)).alias("abs_dev")
-    ).stat.approxQuantile("abs_dev", [0.5], 0)[0]
+    ).stat.approxQuantile("abs_dev", [0.5], quantile_threshold)[0]
     stats.update(
         {
             "mad": mad,
         }
     )
 
-    if chi_squared_threshold > 0.0:
-        stats["chi_squared"] = chi_square(histogram=value_counts.values)
-
     stats["range"] = stats["max"] - stats["min"]
-
-    stats.update(
-        {
-            f"{percentile:.0%}": value
-            for percentile, value in zip(
-                quantiles,
-                series.series_without_na.stat.approxQuantile(series.name, quantiles, 0),
-            )
-        }
-    )
 
     stats["iqr"] = stats["75%"] - stats["25%"]
     stats["cv"] = stats["std"] / stats["mean"] if stats["mean"] else np.NaN
@@ -603,11 +605,15 @@ def describe_numeric_spark_1d(series: SparkSeries, summary) -> Tuple[SparkSeries
     stats["monotonic_increase_strict"] = False
     stats["monotonic_decrease_strict"] = False
 
+    # this function only displays the top N (see config) values for a histogram.
+    # This might be confusing if there are a lot of values of equal magnitude, but we cannot bring all the values to
+    # display in pandas display
+    # the alternative is to do this in spark natively, but it is not trivial
     stats.update(
         histogram_compute(
-            value_counts[~infinity_index].index.values,
+            value_counts.index.values,
             summary["n_distinct"],
-            weights=value_counts[~infinity_index].values,
+            weights=value_counts.values,
         )
     )
 
@@ -626,23 +632,25 @@ def describe_categorical_spark_1d(
     Returns:
         A dict containing calculated series description values.
     """
-    chi_squared_threshold = config["vars"]["num"]["chi_squared_threshold"].get(float)
     check_length = config["vars"]["cat"]["length"].get(bool)
     check_unicode = config["vars"]["cat"]["unicode"].get(bool)
 
     # Only run if at least 1 non-missing value
     value_counts = summary["value_counts_without_nan"]
 
-    finite_values_counts = value_counts[np.isfinite(value_counts)]
-
+    # this function only displays the top N (see config) values for a histogram.
+    # This might be confusing if there are a lot of values of equal magnitude, but we cannot bring all the values to
+    # display in pandas display
+    # the alternative is to do this in spark natively, but it is not trivial
     summary.update(
         histogram_compute(
-            finite_values_counts, summary["n_distinct"], name="histogram_frequencies"
+            value_counts, summary["n_distinct"], name="histogram_frequencies"
         )
     )
 
-    if chi_squared_threshold > 0.0:
-        summary["chi_squared"] = chi_square(histogram=value_counts.values)
+    # do not do chi_square for now, too slow
+    # if chi_squared_threshold > 0.0:
+    #    summary["chi_squared"] = chi_square_spark(series)
 
     if check_length:
         summary.update(length_summary(series))

@@ -58,8 +58,17 @@ class SparkSeries(GenericSeries):
 
     def __init__(self, series, persist=True):
         super().__init__(series)
+        from pyspark.sql.functions import array, map_keys, map_values
+        from pyspark.sql.types import MapType
+
+        # if series type is dict, handle that separately
+        if isinstance(self.series.schema[0].dataType, MapType):
+            series= series.select(array(map_keys(series[self.name]), map_values(series[self.name])).alias(self.name))
         self.series = series
         self.persist_bool = persist
+        series_without_na = self.series.na.drop()
+        series_without_na.persist()
+        self.dropna = series_without_na
 
     @property
     def type(self):
@@ -73,14 +82,13 @@ class SparkSeries(GenericSeries):
     def empty(self) -> bool:
         return self.n_rows == 0
 
-    @property
-    def series_without_na(self):
+    def unpersist_series_without_na(self):
         """
         Useful wrapper for getting the internal data series but with NAs dropped
         Returns: internal spark series without nans
 
         """
-        return self.series.na.drop()
+        self.dropna.unpersist()
 
     def fillna(self, fill=None) -> "SparkSeries":
         if fill is not None:
@@ -89,59 +97,42 @@ class SparkSeries(GenericSeries):
             return SparkSeries(self.series.na.fillna(), persist=self.persist_bool)
 
     @property
+    @lru_cache()
     def n_rows(self) -> int:
         return self.series.count()
 
-    @lru_cache()
-    def value_counts(self, keep_na=True):
+    def value_counts(self):
+        """
+
+        Args:
+            n: by default, get only 1000
+
+        Returns:
+
+        """
 
         from pyspark.sql.functions import array, map_keys, map_values
         from pyspark.sql.types import MapType
 
         # if series type is dict, handle that separately
         if isinstance(self.series.schema[0].dataType, MapType):
-            if keep_na:
-                new_df = self.series.groupby(
-                    map_keys(self.series[self.name]).alias("key"),
-                    map_values(self.series[self.name]).alias("value"),
-                ).count()
-                value_counts = (
-                    new_df.withColumn(self.name, array(new_df["key"], new_df["value"]))
-                    .select(self.name, "count")
-                    .toPandas()
-                )
-            else:
-                new_df = (
-                    self.series.na.drop()
-                    .groupby(
-                        map_keys(self.series[self.name]).alias("key"),
-                        map_values(self.series[self.name]).alias("value"),
-                    )
-                    .count()
-                )
-                value_counts = (
-                    new_df.withColumn(self.name, array(new_df["key"], new_df["value"]))
-                    .select(self.name, "count")
-                    .toPandas()
-                )
+            new_df = self.dropna.groupby(
+                map_keys(self.series[self.name]).alias("key"),
+                map_values(self.series[self.name]).alias("value"),
+            ).count()
+            value_counts = (
+                new_df.withColumn(self.name, array(new_df["key"], new_df["value"]))
+                .select(self.name, "count")
+                .orderBy("count", ascending=False)
+            )
         else:
-            if keep_na:
-                value_counts = self.series.groupBy(self.name).count().toPandas()
-            else:
-                value_counts = (
-                    self.series.na.drop().groupBy(self.name).count().toPandas()
-                )
-
-        value_counts = (
-            value_counts.sort_values("count", ascending=False)
-            .set_index(self.name, drop=True)
-            .squeeze(axis="columns")
-        )
+            value_counts = self.dropna.groupBy(self.name).count()
+        value_counts.persist()
         return value_counts
 
     @lru_cache()
     def count_na(self):
-        return self.series.count() - self.series.na.drop().count()
+        return self.n_rows - self.dropna.count()
 
     def __len__(self):
         return self.n_rows
@@ -151,9 +142,15 @@ class SparkSeries(GenericSeries):
         Warning! this memory usage is only a sample
         TO-DO can we make this faster or not use a sample?
         """
+        sample = self.n_rows ** (1 / 3)
+        percentage = sample / self.n_rows
+        inverse_percentage = 1 / percentage
         return (
-            100
-            * self.series.sample(fraction=0.01).toPandas().memory_usage(deep=deep).sum()
+            inverse_percentage
+            * self.series.sample(fraction=percentage)
+            .toPandas()
+            .memory_usage(deep=deep)
+            .sum()
         )
 
     def get_spark_series(self):
@@ -161,8 +158,14 @@ class SparkSeries(GenericSeries):
 
     def persist(self):
         if self.persist_bool:
-            return self.series.persist()
+            self.series.persist()
 
     def unpersist(self):
         if self.persist_bool:
-            return self.series.unpersist()
+            self.series.unpersist()
+
+    def distinct(self):
+        return self.dropna.distinct().count()
+
+    def unique(self):
+        return self.dropna.dropDuplicates().count()
