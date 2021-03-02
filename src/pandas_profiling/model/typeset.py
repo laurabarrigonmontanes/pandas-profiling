@@ -205,11 +205,8 @@ class SparkNumeric(visions.VisionsBaseType):
     @classmethod
     def contains_op(cls, series: SparkSeries, state: dict) -> bool:
         return (
-            str(series.type) == "DoubleType"
-            or str(series.type) == "LongType"
-            or str(series.type) == "IntegerType"
-            or str(series.type) == "ShortType"
-            or str(series.type) == "FloatType"
+            str(series.type) in ["DoubleType", "LongType", "IntegerType",
+                                 "ShortType", "FloatType"]
         )
 
 
@@ -239,7 +236,7 @@ class SparkTimestamp(visions.VisionsBaseType):
         return [IdentityRelation(cls, SparkUnsupported)]
 
     @classmethod
-    def contains_op(cls, series: SparkSeries) -> bool:
+    def contains_op(cls, series: SparkSeries, state: dict) -> bool:
         return str(series.type) == "TimestampType"
 
 

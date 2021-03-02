@@ -733,7 +733,7 @@ def describe_timestamp_spark_1d(
     )
 
     numeric_results_df = (
-        series.series_without_na.select(
+        series.dropna.select(
             F.min(series.name).alias("min"),
             F.max(series.name).alias("max"),
         )
@@ -744,9 +744,11 @@ def describe_timestamp_spark_1d(
     stats.update(numeric_results_df)
     stats["range"] = stats["max"] - stats["min"]
 
+    values = value_counts.index.values.astype(np.int64) // 10 ** 9
+
     stats.update(
         histogram_compute(
-            value_counts.index.values,
+            values,
             summary["n_distinct"],
             weights=value_counts.values,
         )
