@@ -237,7 +237,7 @@ class SparkTimestamp(visions.VisionsBaseType):
 
     @classmethod
     def contains_op(cls, series: SparkSeries, state: dict) -> bool:
-        return str(series.type) == "TimestampType"
+        return str(series.type) in ["TimestampType", "DateType"]
 
 
 class ProfilingTypeSet(visions.VisionsTypeset):

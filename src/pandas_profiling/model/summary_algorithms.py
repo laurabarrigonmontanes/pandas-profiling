@@ -705,6 +705,7 @@ def describe_boolean_spark_1d(
 
     return series, summary
 
+
 def describe_timestamp_spark_1d(
     series: SparkSeries, summary: dict
 ) -> Tuple[SparkSeries, dict]:
@@ -744,7 +745,13 @@ def describe_timestamp_spark_1d(
     stats.update(numeric_results_df)
     stats["range"] = stats["max"] - stats["min"]
 
-    values = value_counts.index.values.astype(np.int64) // 10 ** 9
+    # cast date to timestamp, it could be improve
+    if value_counts.index.values.dtype != 'datetime64[ns]':
+        values = pd.to_datetime(value_counts.index.values, infer_datetime_format=True)
+    else:
+        values = value_counts.index.values
+
+    values = values.astype(np.int64) // 10 ** 9
 
     stats.update(
         histogram_compute(
