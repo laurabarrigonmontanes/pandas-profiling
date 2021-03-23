@@ -37,7 +37,7 @@ from pandas_profiling.model.typeset import (
     SparkBoolean,
     SparkCategorical,
     SparkNumeric,
-    SparkTimestamp,
+    SparkDateTime,
     SparkUnsupported,
     Unsupported,
 )
@@ -125,7 +125,7 @@ class PandasProfilingSummarizer(BaseSummarizer):
                 describe_supported_spark,
                 describe_boolean_spark_1d,
             ],
-            SparkTimestamp: [
+            SparkDateTime: [
                 # need to include everything here, because we don't
                 describe_counts_spark,
                 describe_generic_spark,

@@ -29,7 +29,7 @@ from pandas_profiling.model.typeset import (
     SparkCategorical,
     SparkNumeric,
     SparkUnsupported,
-    SparkTimestamp,
+    SparkDateTime,
     Unsupported,
 )
 from pandas_profiling.visualisation.missing import (
@@ -98,8 +98,8 @@ def _describe_1d_spark(
         vtype = SparkNumeric
     elif series in SparkCategorical:
         vtype = SparkCategorical
-    elif series in SparkTimestamp:
-        vtype = SparkTimestamp
+    elif series in SparkDateTime:
+        vtype = SparkDateTime
 
     series.persist()
     results = summarizer.summarize(series, dtype=vtype)

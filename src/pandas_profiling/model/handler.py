@@ -66,7 +66,7 @@ def get_render_map():
         ppt.Unsupported: render_algorithms.render_generic,
         ppt.SparkBoolean: render_algorithms.render_boolean,
         ppt.SparkCategorical: render_algorithms.render_categorical,
-        ppt.SparkTimestamp: render_algorithms.render_date,
+        ppt.SparkDateTime: render_algorithms.render_date,
         ppt.SparkNumeric: render_algorithms.render_real,
     }
 

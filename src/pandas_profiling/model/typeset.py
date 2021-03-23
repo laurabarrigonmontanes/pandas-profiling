@@ -230,7 +230,7 @@ class SparkBoolean(visions.VisionsBaseType):
         return str(series.type) == "BooleanType"
 
 
-class SparkTimestamp(visions.VisionsBaseType):
+class SparkDateTime(visions.VisionsBaseType):
     @classmethod
     def get_relations(cls):
         return [IdentityRelation(cls, SparkUnsupported)]
