@@ -746,12 +746,7 @@ def describe_timestamp_spark_1d(
     stats["range"] = stats["max"] - stats["min"]
 
     # cast date to timestamp, it could be improve
-    if value_counts.index.values.dtype != 'datetime64[ns]':
-        values = pd.to_datetime(value_counts.index.values, infer_datetime_format=True)
-    else:
-        values = value_counts.index.values
-
-    values = values.astype(np.int64) // 10 ** 9
+    values = pd.to_datetime(value_counts.index.values, infer_datetime_format=True).astype(np.int64) // 10 ** 9
 
     stats.update(
         histogram_compute(
