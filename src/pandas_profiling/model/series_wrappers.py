@@ -132,3 +132,7 @@ class SparkSeries:
 
     def unique(self):
         return self.dropna.dropDuplicates().count()
+
+    def cast(self, type: str)-> "SparkSeries":
+        from pyspark.sql.functions import col
+        return SparkSeries(self.series.withColumn(self.name, col(self.name).cast(type)), persist=self.persist_bool)

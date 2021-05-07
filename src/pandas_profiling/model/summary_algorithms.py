@@ -632,8 +632,12 @@ def describe_categorical_spark_1d(
     Returns:
         A dict containing calculated series description values.
     """
+    import pyspark.sql.functions as F
+
     # Only run if at least 1 non-missing value
     value_counts = summary["value_counts_without_nan"]
+    value_counts.index = value_counts.index.astype('string')
+    summary["value_counts_without_nan"] = value_counts
 
     # this function only displays the top N (see config) values for a histogram.
     # This might be confusing if there are a lot of values of equal magnitude, but we cannot bring all the values to
@@ -645,6 +649,7 @@ def describe_categorical_spark_1d(
         )
     )
 
+    series = series.cast('string')
     redact = config["vars"]["cat"]["redact"].get(float)
     if not redact:
         summary.update({"first_rows": series.dropna.limit(5).toPandas()})
@@ -724,14 +729,6 @@ def describe_timestamp_spark_1d(
     series.persist()
     # Only run if at least 1 non-missing value
     value_counts = summary["value_counts_without_nan"]
-
-    finite_values_counts = value_counts[np.isfinite(value_counts)]
-
-    summary.update(
-        histogram_compute(
-            finite_values_counts, summary["n_distinct"], name="histogram_frequencies"
-        )
-    )
 
     numeric_results_df = (
         series.dropna.select(

@@ -217,7 +217,7 @@ class SparkCategorical(visions.VisionsBaseType):
 
     @classmethod
     def contains_op(cls, series: SparkSeries, state: dict) -> bool:
-        return str(series.type) == "StringType"
+        return str(series.type) in ["StringType", "BinaryType"]
 
 
 class SparkBoolean(visions.VisionsBaseType):
