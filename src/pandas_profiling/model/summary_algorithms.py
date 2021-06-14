@@ -13,6 +13,7 @@ from pandas_profiling.model.summary_helpers import (
     chi_square,
     file_summary,
     histogram_compute,
+    histogram_spark_compute,
     image_summary,
     length_summary,
     mad,
@@ -609,13 +610,27 @@ def describe_numeric_spark_1d(series: SparkSeries, summary) -> Tuple[SparkSeries
     # This might be confusing if there are a lot of values of equal magnitude, but we cannot bring all the values to
     # display in pandas display
     # the alternative is to do this in spark natively, but it is not trivial
-    stats.update(
-        histogram_compute(
-            value_counts.index.values,
-            summary["n_distinct"],
-            weights=value_counts.values,
+
+    sample = config["plot"]["histogram"]["sample"].get(bool)
+    if sample:
+        stats.update(
+            histogram_compute(
+                value_counts.index.values,
+                summary["n_distinct"],
+                weights=value_counts.values,
+            )
         )
-    )
+
+    else:
+        value_counts, bins = histogram_spark_compute(series.dropna,
+                                                     stats['min'],
+                                                     stats['max'],
+                                                     stats['n_unique'],
+                                                     )
+
+        stats.update({"histogram": np.histogram(value_counts.index.values,
+                                                bins=bins,
+                                                weights=value_counts.values)})
 
     return series, stats
 
@@ -643,11 +658,27 @@ def describe_categorical_spark_1d(
     # This might be confusing if there are a lot of values of equal magnitude, but we cannot bring all the values to
     # display in pandas display
     # the alternative is to do this in spark natively, but it is not trivial
-    summary.update(
-        histogram_compute(
-            value_counts, summary["n_distinct"], name="histogram_frequencies"
+
+    sample = config["plot"]["histogram"]["sample"].get(bool)
+    if sample:
+        summary.update(
+            histogram_compute(
+                value_counts, summary["n_distinct"], name="histogram_frequencies"
+            )
         )
-    )
+    else:
+        value_counts_spark = summary["value_counts_without_nan_spark"].select(F.col('count').alias(series.name))
+        min_max = value_counts_spark.agg(F.min(series.name).alias('min'),
+                                             F.max(series.name).alias('max')).toPandas().loc[0]
+
+        value_counts, bins = histogram_spark_compute(value_counts_spark,
+                                                     min_max['min'],
+                                                     min_max['max'],
+                                                     summary["n_distinct"])
+
+        summary.update({"histogram_frequencies": np.histogram(value_counts.index.values,
+                                                              bins=bins,
+                                                              weights=value_counts.values)})
 
     series = series.cast('string')
     redact = config["vars"]["cat"]["redact"].get(float)
@@ -728,9 +759,9 @@ def describe_timestamp_spark_1d(
 
     series.persist()
     # Only run if at least 1 non-missing value
-    value_counts = summary["value_counts_without_nan"]
 
-    numeric_results_df = (
+    stats = summary
+    stats.update(
         series.dropna.select(
             F.min(series.name).alias("min"),
             F.max(series.name).alias("max"),
@@ -738,18 +769,32 @@ def describe_timestamp_spark_1d(
         .toPandas().loc[0].to_dict()
     )
 
-    stats = summary
-    stats.update(numeric_results_df)
     stats["range"] = stats["max"] - stats["min"]
 
-    # cast date to timestamp, it could be improve
-    values = pd.to_datetime(value_counts.index.values, infer_datetime_format=True).astype(np.int64) // 10 ** 9
+    sample = config["plot"]["histogram"]["sample"].get(bool)
+    if sample:
+        value_counts = summary["value_counts_without_nan"]
 
-    stats.update(
-        histogram_compute(
-            values,
-            summary["n_distinct"],
-            weights=value_counts.values,
+        # cast date to timestamp, it could be improve
+        values = pd.to_datetime(value_counts.index.values, infer_datetime_format=True).astype(np.int64) // 10 ** 9
+
+        stats.update(
+            histogram_compute(
+                values,
+                summary["n_distinct"],
+                weights=value_counts.values,
+            )
         )
-    )
+
+    else:
+        value_counts, bins = histogram_spark_compute(series.dropna,
+                                                     stats['min'],
+                                                     stats['max'],
+                                                     series.unique(),
+                                                     )
+
+        # cast date to timestamp, it could be improve
+        values = pd.to_datetime(value_counts.index.values, infer_datetime_format=True).astype(np.int64) // 10 ** 9
+        stats.update({"histogram": np.histogram(values, bins=bins, weights=value_counts.values)})
+
     return series, stats

@@ -7,6 +7,7 @@ from pandas_profiling.model.summary_algorithms import (
     describe_boolean_1d,
     describe_boolean_spark_1d,
     describe_counts,
+    describe_timestamp_spark_1d,
 )
 
 
@@ -52,3 +53,30 @@ def test_boolean_count_spark(spark_session):
     )
     assert results["top"]
     assert results["freq"] == 2
+
+
+@pytest.mark.sparktest
+def test_describe_timestamp_spark_1d(spark_session):
+    from datetime import datetime
+    df = pd.DataFrame([{"Timestamp": datetime(2011, 7, 4)},
+                      {"Timestamp": datetime(2022, 1, 1, 13, 57)},
+                      {"Timestamp": datetime(1990, 12, 9)},
+                      {"Timestamp": None},
+                      {"Timestamp": np.nan},
+                      {"Timestamp": datetime(1990, 12, 9)},
+                      {"Timestamp": datetime(1950, 12, 9)},
+                      {"Timestamp": datetime(1950, 12, 9)},
+                      {"Timestamp": datetime(1950, 12, 9)},
+                      {"Timestamp": datetime(1898, 1, 2)}
+                      ])
+
+    sdf = spark_session.createDataFrame(df)
+    value_counts = df.value_counts().reset_index().set_index('Timestamp').squeeze()
+
+    _, results = describe_timestamp_spark_1d(
+        SparkSeries(sdf), {"n_unique": 5,
+                           "value_counts_without_nan": value_counts})
+
+    assert results["min"] == datetime(1898, 1, 2)
+    assert results["max"] == datetime(2022, 1, 1, 13, 57)
+    assert str(results['range']) == '45289 days 13:57:00'

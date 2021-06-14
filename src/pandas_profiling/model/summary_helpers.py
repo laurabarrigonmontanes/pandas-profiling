@@ -454,6 +454,41 @@ def histogram_compute(finite_values, n_unique, name="histogram", weights=None):
     return stats
 
 
+def histogram_spark_compute(series, minim, maxim, n_unique):
+    import pyspark.sql.functions as F
+
+    bins = config["plot"]["histogram"]["bins"].get(int)
+    bins = 10 if bins == 0 else min(bins, n_unique)
+
+    bin_width = (maxim - minim) / float(bins)
+    left_list = [minim + i * bin_width for i in range(bins)]
+
+    bin_id = 0
+    condition = F
+    for left in left_list[:-1]:
+        right = left + bin_width
+        condition = condition.when(F.col(series.columns[0]) < right, bin_id)
+        bin_id += 1
+    condition = condition.otherwise(bin_id)
+
+    bin_data = (series
+                .withColumn("bin_id", condition)
+                .groupBy("bin_id").count()
+                ).toPandas()
+
+    # If no data goes into one bin, it won't
+    # appear in bin_data; so we should fill
+    # in the blanks
+    bin_data.index = bin_data["bin_id"]
+    new_index = list(range(bins))
+    bin_data = bin_data.reindex(new_index)
+    bin_data = bin_data.drop("bin_id", axis=1).fillna(0)
+
+    bin_data.index = left_list
+
+    return bin_data.squeeze(), bins
+
+
 def chi_square(values=None, histogram=None):
     if histogram is None:
         histogram, _ = np.histogram(values, bins="auto")
